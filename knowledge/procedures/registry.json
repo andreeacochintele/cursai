@@ -1,0 +1,12 @@
+
+[{
+  "id": "support_procedure",
+  "name": "Support Procedures",
+  "description": "This knowledge base contains step-by-step instructions for handling common support scenarios and troubleshooting tasks. It is designed to assist support staff in resolving customer issues efficiently. ",
+  "always_load": true},
+{
+  "id": "service_troubleshooting",
+  "name": "Service Troubleshooting",
+  "description": "Process for diagnosing Linux services",
+  "always_load": false}
+]

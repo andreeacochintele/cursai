@@ -1,0 +1,10 @@
+# Ignorăm fișierele de configurare care conțin chei API sau adrese private
+config.py
+
+# Ignorăm baza de date locală de vectori (este prea mare și se generează local)
+embeddings.json
+
+# Ignorăm folderele temporare generate de Python sau editoare
+__pycache__/
+.vscode/
+.idea/

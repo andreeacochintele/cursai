@@ -1,0 +1,7 @@
+
+[{
+  "id": "company_facts",
+  "name": "Company Facts",
+  "description": "This knowledge base contains factual information about the company, including its history, mission, values, products, and services. It serves as a reference for employees and stakeholders to understand the company's background and offerings. ",
+   "always_load": true
+}]
