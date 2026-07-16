@@ -1,5 +1,6 @@
 import json
 from config import CHUNK_SIZE
+from utils import count_tokens
 
 class DocumentChunker:
 
@@ -15,11 +16,12 @@ class DocumentChunker:
             chunk_text = " ".join(chunk_words)
             
             chunk_index = i // CHUNK_SIZE
-            
+            token_count = count_tokens(chunk_text)
             dictionar = {
                 "document_id": document_id,
                 "chunk_index": chunk_index,
-                "content": chunk_text
+                "content": chunk_text,
+                "token_count":token_count
             }
             print("Dictionar--- document_chunker", dictionar)
             chunks.append(dictionar)

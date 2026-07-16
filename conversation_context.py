@@ -4,50 +4,36 @@ Conversation memory management.
 This module is responsible for storing and retrieving
 messages exchanged between the user and the AI assistant.
 """
-#from config import SYSTEM_PROMPT
+from config import INPUT_TOKEN_PRICE_PER_MILLION, OUTPUT_TOKEN_PRICE_PER_MILLION
 import json
 import os
+from utils import count_tokens
 
-DIRNAME = os.getcwd()
 
 class ConversationContext:
     def __init__(self):
-        self.messages = [
-            self.assemble_system_prompt()
-        ]
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+
+        system_message = self.assemble_system_prompt()
+
+
+        sys_input = count_tokens(system_message["content"])
+        system_message["input_tokens"] = sys_input
+        system_message["output_tokens"] = 0
+
+
+        self.total_input_tokens += sys_input
+        self.messages = [system_message]
+
 
     def assemble_system_prompt(self):
-        # knowlegde_dir = os.path.join(DIRNAME,"knowledge")
-        # prompts_dir = os.path.join(knowlegde_dir,"prompts")
-        # facts_dir = os.path.join(knowlegde_dir,"facts")
-        # procedures_dir = os.path.join(knowlegde_dir,"procedures")
-
-        # files = []
-        # for file in os.listdir(prompts_dir):
-        #     files.append(os.path.join(prompts_dir,file))
-        # with open(f'{facts_dir}\\registry.json','r') as f:
-        #     facts_registry = json.load(f)
-        # with open(f'{procedures_dir}\\registry.json','r') as f:
-        #     procedures_registry = json.load(f)
-
-        # for object in facts_registry:
-        #     if object["always_load"]:
-        #         files.append(os.path.join(facts_registry, f'{object["id"]}.md'))                               
-        # for object in procedures_registry:
-        #     if object["always_load"]:
-        #         files.append(os.path.join(procedures_registry, f'{object["id"]}.md'))
-
-        # documentation_arr =[]        
-        # for doc_files in files:
-        #     with open(doc_files) as f:
-        #         documentation_arr.append(f.read())
-        # documentation = "\n\n###\n\n".join(documentation_arr)
-        # print(documentation)
         with open(
             "knowledge/prompts/identity.md", "r", encoding="utf-8"
         ) as f:
             prompt_content = f.read()
-        # print("SYSTEM PROMPT:", prompt_content)
+    
 
         # adaugam company facts in prompt content
         company_facts = json.load(open("knowledge/facts/registry.json", "r", encoding="utf-8"))
@@ -75,8 +61,25 @@ class ConversationContext:
         }
     
 
-    def add_message(self, message):
-        self.messages.append(message)
+    def add_message(self, message:dict, input_tokens:int = 0,output_tokens:int=0):
+        msg_to_store = message.copy()
+
+        msg_to_store["input_tokens"] = msg_to_store.get("input_tokens",input_tokens)
+        msg_to_store["output_tokens"] = msg_to_store.get("output_tokens",output_tokens)
+
+        self.total_input_tokens += msg_to_store["input_tokens"]
+        self.total_output_tokens += msg_to_store["output_tokens"]
+        
+        self.messages.append(msg_to_store)
 
     def get_history(self):
         return self.messages
+    
+    def get_total_tokens_consumed(self):
+        """Returnează stadiul curent al consumului total din sesiune."""
+        return {
+            "total_input": self.total_input_tokens,
+            "total_output": self.total_output_tokens,
+            "total_cost": self.total_input_tokens/1_000_000*INPUT_TOKEN_PRICE_PER_MILLION + self.total_output_tokens/1_000_000*OUTPUT_TOKEN_PRICE_PER_MILLION
+        }
+    

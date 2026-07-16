@@ -4,8 +4,7 @@ Lucky Number Tool.
 This tool generates a lucky number based on a user's
 birth date and the current date.
 
-The implementation is intentionally incomplete and must
-be finalized during the laboratory.
+
 """
 
 from datetime import datetime
