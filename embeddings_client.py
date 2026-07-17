@@ -6,7 +6,15 @@ from config import EMBEDDINGS_MODEL, EMBEDDINGS_ENDPOINT, MIN_SIMILARITY
 
 
 class EmbeddingsClient:
+    """
+    Handles communication with the external Embeddings API, perform cosine similarity,
+    and executes semantic search over local vector databases
+    """
+
     def get_embedding(self, text: str) -> list[float]:
+        """
+        Send a POST request to the configured API endpoint to retrieve vectir embeddings for a text
+        """
         response = requests.post(
             EMBEDDINGS_ENDPOINT,
             json={
@@ -16,8 +24,8 @@ class EmbeddingsClient:
         )
 
         if not response.ok:
-            print("STATUS:", response.status_code)
-            print("BODY:", response.text)
+            print("[ERROR]API STATUS CODE:", response.status_code)
+            print("[ERROR]RESPONSE BODY:", response.text)
 
         response.raise_for_status()
         return response.json()["embeddings"][0]
@@ -41,22 +49,32 @@ class EmbeddingsClient:
         dot_product = sum(a * b for a, b in zip(vec1, vec2))
         magnitude1 = sum(a ** 2 for a in vec1) ** 0.5
         magnitude2 = sum(b ** 2 for b in vec2) ** 0.5
+
+        # Verify if the division could give error to prevent it
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+
         return dot_product / (magnitude1 * magnitude2)
     
 
-    def semantic_search(self, user_question: str):
+    def semantic_search(self, user_question: str, top_k: int = 2):
+        """
+        Performs vector search. Convert user query to embedding,
+        compares it against locally stored chunks, and returns matches exceeding 
+        MIN_SIMILARITY, sorted by relevance.
+        """
         try:
             with open("embeddings.json", "r", encoding="utf-8") as f:
-                embeddings_data = json.load(f)  # Acum avem o listă de dicționare Python
+                embeddings_data = json.load(f)  # Now we have a list of dictionaries in Python
         except FileNotFoundError:
-            print("Eroare: Fișierul 'embeddings.json' nu există. Rulează mai întâi generatorul!")
+            print("[ERROR]:'embeddings.json' is missing.")
             return []
 
-        # Generăm embedding-ul pentru întrebarea utilizatorului
+        # Generate the vector representation for the user's query
         question_embedding = self.get_embedding(user_question)
         results = []
         
-        # Calculăm similaritatea cu fiecare chunk salvat
+        # Calculate similarity
         for chunk in embeddings_data:
             similarity = self.cosine_similarity(
                 question_embedding,
@@ -70,13 +88,13 @@ class EmbeddingsClient:
                 "content": chunk["content"]
             })
             
-        # Sortăm descrescător (reverse=True), ca cele mai mari similarități să fie primele!
+        # Sort result descending (reverse=True)
         sorted_results = sorted(results, key=lambda x: x["similarity"], reverse=True) 
 
-        # Filtrăm rezultatele care nu depășesc pragul minim de similaritate
+        # Filter out results that do not meet the minimum confidence
         approved_results = []
         for chunk in sorted_results:
             if chunk["similarity"] >= MIN_SIMILARITY:
                 approved_results.append(chunk)
 
-        return approved_results
+        return approved_results[:top_k]

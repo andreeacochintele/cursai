@@ -2,29 +2,39 @@
 LLM integration layer.
  
 This module is responsible for all communication
-with the language model.
+with the language model via OpenAI/Azure endpoint,
+inlcuding formatting tools, executing completions, 
+and capturing token usage.
 """
- 
-from openai import OpenAI
- 
+import copy
+import json 
+from openai import OpenAI, OpenAIError
 from config import (
     MODEL_NAME,
     AZURE_ENDPOINT,
     API_KEY
 )
- 
 from tools.tool import Tool
  
- 
 class LLMClient:
- 
+    """
+    Client wrapper for OpenAi/Azure API calls.
+    Handles formatting of system tools, conversational completions and
+    usage tracking.
+    
+    """
     def __init__(self):
+        # Initializa the OpenAI client pointing to the Azure or custom endpoint
         self.client = OpenAI(
             base_url=AZURE_ENDPOINT,
             api_key=API_KEY
         )
  
     def _tool_to_dict(self, tool: Tool):
+        """
+        Converts a custom Tool class instance into the schema format 
+        expected by the OpenAI tools API.
+        """
         return {
             "type": "function",
             "function": {
@@ -34,44 +44,88 @@ class LLMClient:
             }
         }
  
-    def generate_response(self, messages, tools=None):
- 
+    def generate_response(self, messages, tools: list = None):
+        """
+        Sends the conversation history to the LLM and returns the structure 
+        including generated message, tool calls and API token usage.
+        """
+
+        api_messages = []
+        for msg in messages:
+            # create a copy
+            msg_copy = copy.deepcopy(msg)
+            
+            if "tool_calls" in msg_copy and msg_copy["tool_calls"]:
+                for tc in msg_copy["tool_calls"]:
+                    # If 'arguments' is a dict or an object in Python, convert to string JSON 
+                    if "function" in tc and "arguments" in tc["function"]:
+                        args_val = tc["function"]["arguments"]
+                        if not isinstance(args_val, str):
+                            tc["function"]["arguments"] = json.dumps(args_val)
+                            
+            api_messages.append(msg_copy)
+
+        # Prepare arguments for the completion API call
         kwargs = {
             "model": MODEL_NAME,
             "messages": messages
         }
- 
+
+        # Inject formatted tools if any are active
         if tools:
             kwargs["tools"] = [
                 self._tool_to_dict(tool)
                 for tool in tools
             ]
+            print(f"Tools used: {kwargs["tools"]}")
+        
+        try:
+            # Execute API request
+            response = self.client.chat.completions.create(
+                **kwargs
+            )
+        except OpenAIError as e:
+            # Handle specific OpenAi exceptions
+            print(f"[ERROR] LLM API Call failed: {e}")
+            raise e
+        except Exception as e:
+            print(f"[ERROR] Unexpected connection error. {e}")
+            raise e
  
-        response = self.client.chat.completions.create(
-            **kwargs
-        )
- 
+        # Extract the primary generated assistant message
         message = response.choices[0].message
- 
+
+        # Build the standardized response dictionary
         result = {
             "message": {
                 "role": "assistant",
                 "content": message.content
-            }
+            }, 
+            # Extract and pass the API usage back to the agent
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            } if getattr(response, "usage", None) else None
         }
- 
+
+        # Process tool calls if the model requested any actions
         if getattr(message, "tool_calls", None):
- 
             result["message"]["tool_calls"] = []
  
             for tc in message.tool_calls:
- 
+                # Safely parse JSON arguments if they come as string
+                try:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments,str) else tc.function.arguments
+                except json.JSONDecodeError:
+                    args = tc.function.arguments
+
                 result["message"]["tool_calls"].append({
                     "id": tc.id,
                     "type": "function",
                     "function": {
                         "name": tc.function.name,
-                        "arguments": tc.function.arguments
+                        "arguments": args
                     }
                 })
  

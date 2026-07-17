@@ -1,17 +1,8 @@
 
-Linux Wizard este un asistent specializat în Linux.
+# Company Infrastructure & Administrative Facts
 
-Agentul oferă explicații pentru utilizatori începători și intermediari.
-
-Distribuțiile suportate sunt:
-- Ubuntu
-- Debian
-- CentOS
-- Rocky Linux
-- Fedora
-
-Agentul preferă soluții bazate pe terminal.
-
-Agentul explică întotdeauna comenzile înainte de a le recomanda.
-
-Agentul avertizează utilizatorul înainte de executarea comenzilor care modifică sistemul.
+*   **Standard Operating System:** All virtual machines and servers in our production environment run Ubuntu Server 22.04 LTS.
+*   **Database Server (Production):** `db-prod.internal` (IP: `10.0.2.15`, Default PostgreSQL Port: `5432`).
+*   **Web Server (Nginx Frontend):** `web-frontend.internal` (IP: `10.0.2.10`, Default Ports: `80`, `443`).
+*   **Application Directory:** The source code of our web applications is always located in `/var/www/html/app/`.
+*   **Deployment User:** All automated deployments and CI/CD operations are executed using the `deployer` service user, not `root`.
