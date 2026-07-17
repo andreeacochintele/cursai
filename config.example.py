@@ -13,11 +13,12 @@ Future exercises may extend this file with:
 AZURE_ENDPOINT = "link"
 API_KEY = "key"
 MODEL_NAME = "model"
-CHUNK_SIZE = 100
+CHUNK_SIZE = 150
 EMBEDDINGS_MODEL = "bge-m3:latest"
 
 EMBEDDINGS_ENDPOINT = "http://localhost:11434/api/embed"
-MIN_SIMILARITY = 0.7
+MIN_SIMILARITY = 0.8
+MAX_HISTORY_MESSAGES = 13
 
 INPUT_TOKEN_PRICE_PER_MILLION = 2.0
 OUTPUT_TOKEN_PRICE_PER_MILLION = 10.0
@@ -25,4 +26,6 @@ OUTPUT_TOKEN_PRICE_PER_MILLION = 10.0
 MODEL_ENDPOINT = (
     "http://localhost:11434/api/chat"
 )
+
+
 
