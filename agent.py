@@ -1,6 +1,7 @@
 """Core agent orchestration.
 The agent coordinates communication between
 the conversation context and the language model."""
+import copy
 import json
 from embeddings_client import EmbeddingsClient
 from utils import count_tokens
@@ -12,16 +13,23 @@ class Agent:
     executing  LLM completions, managing tools, and logging sessions cost
     
     """
-    def __init__(self, llm_client, context, tools=None):
+    def __init__(self, llm_client, context, tools=None, embeddings_client: EmbeddingsClient | None = None):
         self.llm_client = llm_client
         self.context = context
         # Convert the tools list into a lookup dictionary mapped by tool name
         self.tools = {tool.name: tool for tool in tools} if tools else {}
+        # Reused across calls (instead of "new EmbeddingsClient() per message"
+        # like the CLI version did) so the underlying httpx connection pool
+        # is shared. Passed in explicitly so session_manager.py can give
+        # every session the same shared pool.
+        self.embeddings_client = embeddings_client or EmbeddingsClient()
+
+
 
     def _handle_tool_calls(self, tool_calls) -> list[dict]:
         """
         Iterate through requested tool calls, executes the matching local callbacks,
-        and formats the results for LLM consuption.
+        and formats the results for LLM consumption.
         """
         results = []
         for tc in tool_calls:
@@ -43,7 +51,7 @@ class Agent:
             else:
                 result = f"Tool '{tool_name}' not found"
 
-            # Format the output mathing the OpenAi tool message schema
+            # Format the output matching the OpenAi tool message schema
             results.append({
                 "role": "tool",
                 "tool_call_id": tool_id,
@@ -51,7 +59,7 @@ class Agent:
             })
         return results
 
-    def _get_retrieved_context(self, user_message: str) -> str:
+    async def _get_retrieved_context(self, user_message: str) -> str:
         """
         Queries the vector database and aggregate matching documents
         If no relevant chunks are found, returns a safe fallback instruction.
@@ -59,7 +67,7 @@ class Agent:
         try:
             client = EmbeddingsClient()
             # Search for the best 2 fragments
-            results = client.semantic_search(user_message, top_k = 2)
+            results = await client.semantic_search(user_message, top_k = 2)
         except Exception as e:
             # The data base is not accesible
             print(f"[WARNING] Semantic search failed: {e}")
@@ -94,15 +102,15 @@ class Agent:
             
         return prompt, completion
 
-    def _execute_tool_workflow(self, initial_message) -> tuple[dict, int, int]:
+    async def _execute_tool_workflow(self, initial_message) -> tuple[dict, int, int, bool]:
         """
-        Executes requested tool calls, appends results to history, and prompts the LLM again
+        Executes requested tool calls, appends results to history, and prompts the LLM again.
+        Returns (message, prompt_tokens, completion_tokens, was_truncated).
         """
         total_prompt = 0
         total_completion = 0
         
         # Create a deep copy of the initial message to prevent mutating the original data structure
-        import copy
         saved_message = copy.deepcopy(initial_message)
         
         # Ensure that function arguments are serialized back to a JSON string 
@@ -112,62 +120,88 @@ class Agent:
                 tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
 
         # We add the agent's initial intent to run the tools in context
-        self.context.add_message(saved_message)
+        await self.context.add_message(saved_message)
 
         # Execute tools and append their response to history
         tool_results = self._handle_tool_calls(initial_message["tool_calls"])
         for result in tool_results:
-            self.context.add_message(result)
+            await self.context.add_message(result)
         
         # Second run of the LLM with the tools information
-        second_response = self.llm_client.generate_response(
-            self.context.get_history()
-        )
-        
+        try:
+            second_response = await self.llm_client.generate_response(
+                self.context.get_history()
+            )
+        except Exception as e:
+            print(f"[ERROR] LLM call after tool execution failed: {e}")
+            fallback_message = {
+                "role": "assistant",
+                "content": (
+                    "I ran the requested tool(s), but I couldn't reach the language model "
+                    "to finish formulating a response. Please check your connection/API "
+                    "configuration and try again."
+                )
+            }
+            return fallback_message, 0, 0, False
+
         # Capture the usage for the second LLM turn
         p, c = self._track_llm_usage(second_response)
         total_prompt += p
         total_completion += c
         
-        return second_response["message"], total_prompt, total_completion
+        return second_response["message"], total_prompt, total_completion, second_response.get("truncated", False)
 
-    def process_message(self, user_message: str) -> str:
+    async def process_message(self, user_message: str) -> str:
         """
-        The entry point for processiong incoming user prompts.
-        Coordonate RAG injection, usage tracking, tool routing, and final output
+        The entry point for processing incoming user prompts.
+        Coordinates RAG injection, usage tracking, tool routing, and final output
         """
         # Log user's prompt
-        self.context.add_message({"role": "user", "content": user_message})
+        await self.context.add_message({"role": "user", "content": user_message})
 
-        # Retrieve semantic context(RAG) and log it as a system message
-        context_text = self._get_retrieved_context(user_message)
-        #self.context.add_message({"role": "system", "content": context_text})
+        # Retrieve semantic context (RAG)
+        context_text = await self._get_retrieved_context(user_message)
 
         # Compute token counts for monitoring
         total_input_tokens = count_tokens(user_message) + count_tokens(context_text)
 
-        # Create a temporary message list for API calls
-        # Take the clean history and append RAG context temporarily
+        # Create a temporary message list for API calls only.
+        # We intentionally do NOT persist the RAG context into self.context:
+        # this keeps the permanent conversation history lean (cost optimization),
+        # while still giving the LLM the retrieved context for this single turn.
         api_messages = self.context.get_history().copy()
-        api_messages.append({"role":"system", "content": context_text})
+        api_messages.append({"role": "system", "content": context_text})
 
+        # Request initial LLM completion (uses api_messages, WITH RAG context)
+        try:
+            response = await self.llm_client.generate_response(
+                api_messages,
+                tools=list(self.tools.values())
+            )
+        except Exception as e:
+            print(f"[ERROR] LLM call failed: {e}")
+            fallback_text = (
+                "I'm unable to reach the language model right now (network or API error). "
+                "Please check your connection and API configuration, then try again."
+            )
+            await self.context.add_message(
+                {"role": "assistant", "content": fallback_text},
+                input_tokens=total_input_tokens,
+                output_tokens=count_tokens(fallback_text)
+            )
+            return fallback_text
 
-        # Request initial LLM completion
-        response = self.llm_client.generate_response(
-            self.context.get_history(),
-            tools=list(self.tools.values())
-        )
-
-        # Track usage of the firs LLM generation
+        # Track usage of the first LLM generation
         p_tokens, c_tokens = self._track_llm_usage(response)
         total_prompt = p_tokens
         total_completion = c_tokens
 
         message = response["message"]
+        was_truncated = response.get("truncated", False)
 
         # Check if the LLM wants to perform external tool activations
         if message.get("tool_calls"):
-            message, tool_p, tool_c = self._execute_tool_workflow(message)
+            message, tool_p, tool_c, was_truncated =await self._execute_tool_workflow(message)
             total_prompt += tool_p
             total_completion += tool_c
 
@@ -177,19 +211,38 @@ class Agent:
             total_prompt = total_input_tokens
             total_completion = count_tokens(message.get("content", ""))
 
-        # Save the final assistant answer 
-        self.context.add_message(
-        message, 
-        input_tokens=total_prompt, 
-        output_tokens=total_completion
-    )
+        # Save the final assistant answer
+        await self.context.add_message(
+            message,
+            input_tokens=total_prompt,
+            output_tokens=total_completion
+        )
 
         # Fetch statistics from the conversation context
         session_stats = self.context.get_total_tokens_consumed()
 
         # Display session usage metrics in console
-        print(f" [Mesaj curent : {total_prompt} | Răspuns: {total_completion} tokeni]")
-        print(f" [TOTAL CONVERSAȚIE - Input: {session_stats['total_input']} tokeni | Output: {session_stats['total_output']} tokeni | Total: {session_stats['grand_total']} tokeni | Cost: {session_stats['total_cost']}]")
+        print(f" [Current message: {total_prompt} input | {total_completion} output tokens]")
+        print(f" [SESSION TOTAL - Input: {session_stats['total_input']} tokens | "
+              f"Output: {session_stats['total_output']} tokens | "
+              f"Total: {session_stats['grand_total']} tokens | "
+              f"Cost: {session_stats['total_cost']}]")
         print("-" * 60)
 
-        return message.get("content", "")
+        # Fallback: the LLM call succeeded but produced no usable text
+        # (e.g. content came back null/empty with no tool_calls either).
+        if message.get("content"):
+            final_content = message["content"]
+        elif was_truncated:
+            final_content = (
+                "My response got cut off before I could finish (token limit reached). "
+                "Try asking a more specific/shorter question, or raise MAX_RESPONSE_TOKENS "
+                "in config.py."
+            )
+        else:
+            final_content = (
+                "I wasn't able to come up with a useful answer for that. "
+                "Could you rephrase the question or give a bit more detail?"
+            )
+
+        return final_content

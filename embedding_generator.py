@@ -20,7 +20,7 @@ class EmbeddingGenerator:
     and serializes vector data with full document metadata.
     """
 
-    def generate_embeddings(self):
+    async def generate_embeddings(self):
         """
         Processes all knowledge base files, generates their embeddings,
         and saves them locally to 'embeddings.json'.
@@ -39,15 +39,15 @@ class EmbeddingGenerator:
             return
         
 
-        print(f"[INFO] Founf {len(chunks)} chunks. Generating embeddings...")
+        print(f"[INFO] Found {len(chunks)} chunks. Generating embeddings...")
         client = EmbeddingsClient()
         embeddings_data = []
 
-        # Process each chunck automatically
+        # Process each chunk automatically
         for id, chunk in enumerate(chunks, 1):
             try:
-                # Generate embedding vector for the current chunck content
-                embedding = client.get_embedding(
+                # Generate embedding vector for the current chunk's content
+                embedding = await client.get_embedding(
                     chunk["content"]
                 )
                 # Append structured chunk metadata, content, token counts
@@ -62,7 +62,7 @@ class EmbeddingGenerator:
                 )
                 print(f"Processed chunk {id}/{len(chunks)} (ID: {chunk['document_id']})")
             except Exception as e:
-                print(f"[ERROR] Failed to generate embedding for chunk{id}/{len(chunks)} : {e} ")
+                print(f"[ERROR] Failed to generate embedding for chunk {id}/{len(chunks)} : {e} ")
         
         
         print(f"[INFO] Saving {len(embeddings_data)} vectors to 'embeddings.json'...")
@@ -77,5 +77,4 @@ class EmbeddingGenerator:
         except FileNotFoundError:
             print("[ERROR]:'embeddings.json' is missing.")
             return []
-        print("[SUCCES] Vector databse initializes and saved succesfully")
-        
+        print("[SUCCESS] Vector database initialized and saved successfully")

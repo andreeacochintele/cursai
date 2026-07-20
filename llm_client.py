@@ -3,16 +3,17 @@ LLM integration layer.
  
 This module is responsible for all communication
 with the language model via OpenAI/Azure endpoint,
-inlcuding formatting tools, executing completions, 
+including formatting tools, executing completions, 
 and capturing token usage.
 """
 import copy
 import json 
-from openai import OpenAI, OpenAIError
+from openai import AsyncOpenAI, OpenAIError
 from config import (
     MODEL_NAME,
     AZURE_ENDPOINT,
-    API_KEY
+    API_KEY,
+    MAX_RESPONSE_TOKENS
 )
 from tools.tool import Tool
  
@@ -24,10 +25,12 @@ class LLMClient:
     
     """
     def __init__(self):
-        # Initializa the OpenAI client pointing to the Azure or custom endpoint
-        self.client = OpenAI(
+        # Initializa the OpenAI client pointing to the Azure or custom endpoint.
+        # A timeout is set so a hanging/unresponsive endpoint doesn't block forever.
+        self.client = AsyncOpenAI(
             base_url=AZURE_ENDPOINT,
-            api_key=API_KEY
+            api_key=API_KEY,
+            timeout=60.0
         )
  
     def _tool_to_dict(self, tool: Tool):
@@ -44,16 +47,21 @@ class LLMClient:
             }
         }
  
-    def generate_response(self, messages, tools: list = None):
+    async def generate_response(self, messages, tools: list = None):
         """
         Sends the conversation history to the LLM and returns the structure 
         including generated message, tool calls and API token usage.
         """
 
-        # Prepare arguments for the completion API call
+        # Prepare arguments for the completion API call.
+        # max_completion_tokens is set explicitly — relying on the endpoint's
+        # own default can silently cap (and truncate) responses too early.
+        # Note: newer OpenAI models require 'max_completion_tokens' instead
+        # of the older 'max_tokens' parameter.
         kwargs = {
             "model": MODEL_NAME,
-            "messages": messages
+            "messages": messages,
+            "max_completion_tokens": MAX_RESPONSE_TOKENS
         }
 
         # Inject formatted tools if any are active
@@ -62,11 +70,11 @@ class LLMClient:
                 self._tool_to_dict(tool)
                 for tool in tools
             ]
-            print(f"Tools used: {kwargs["tools"]}")
+        
         
         try:
             # Execute API request
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 **kwargs
             )
         except OpenAIError as e:
@@ -78,7 +86,16 @@ class LLMClient:
             raise e
  
         # Extract the primary generated assistant message
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
+
+        # A response cut off mid-generation (finish_reason == "length") is
+        # the main reason content can come back empty/incomplete — flag it
+        # loudly instead of leaving the caller to guess from token counts.
+        was_truncated = getattr(choice, "finish_reason", None) == "length"
+        if was_truncated:
+            print(f"[WARNING] LLM response was truncated at MAX_RESPONSE_TOKENS "
+                  f"({MAX_RESPONSE_TOKENS}). Consider raising this value in config.py.")
 
         # Build the standardized response dictionary
         result = {
@@ -86,6 +103,7 @@ class LLMClient:
                 "role": "assistant",
                 "content": message.content
             }, 
+            "truncated": was_truncated,
             # Extract and pass the API usage back to the agent
             "usage": {
                 "prompt_tokens": response.usage.prompt_tokens,
@@ -115,3 +133,7 @@ class LLMClient:
                 })
  
         return result
+    
+    async def aclose(self):
+        """Cleanly closes the underlying async HTTP connections on shutdown."""
+        await self.client.close()

@@ -1,35 +1,46 @@
-import requests
 import json
+import httpx
+from openai import AsyncOpenAI, OpenAIError
 
-from config import EMBEDDINGS_MODEL, EMBEDDINGS_ENDPOINT, MIN_SIMILARITY
+from config import EMBEDDINGS_MODEL, MIN_SIMILARITY, AZURE_ENDPOINT, API_KEY
 
 
 
 class EmbeddingsClient:
     """
-    Handles communication with the external Embeddings API, perform cosine similarity,
-    and executes semantic search over local vector databases
+    Handles communication with the Azure AI Foundry embeddings deployment
+    (same endpoint/credentials as chat completions), performs cosine
+    similarity, and executes semantic search over the local vector database.
     """
-
-    def get_embedding(self, text: str) -> list[float]:
-        """
-        Send a POST request to the configured API endpoint to retrieve vectir embeddings for a text
-        """
-        response = requests.post(
-            EMBEDDINGS_ENDPOINT,
-            json={
-                "model": EMBEDDINGS_MODEL,
-                "input": text
-            }
+    def __init__(self, http_client: httpx.AsyncClient | None = None):
+        # Reuses the same Azure endpoint/key as the chat model, via the
+        # OpenAI SDK, exactly like LLMClient does — this is a real Azure
+        # AI Foundry deployment, not a local Ollama server. An injected
+        # httpx client lets the app share one connection pool instead of
+        # opening a new one per call; if none is given, the SDK manages
+        # its own internally.
+        self._client = AsyncOpenAI(
+            base_url=AZURE_ENDPOINT,
+            api_key=API_KEY,
+            http_client=http_client,
+            timeout=30.0,
         )
 
-        if not response.ok:
-            print("[ERROR]API STATUS CODE:", response.status_code)
-            print("[ERROR]RESPONSE BODY:", response.text)
-
-        response.raise_for_status()
-        return response.json()["embeddings"][0]
-
+    async def get_embedding(self, text: str) -> list[float]:
+        """
+        Requests a vector embedding for `text` from the configured Azure
+        AI Foundry embeddings deployment (EMBEDDINGS_MODEL in config.py).
+        """
+        try:
+            response = await self._client.embeddings.create(
+                model=EMBEDDINGS_MODEL,
+                input=text,
+            )
+            return response.data[0].embedding
+        except OpenAIError as e:
+            print(f"[ERROR] Embeddings request failed: {e}")
+            raise RuntimeError(f"Embeddings service error: {e}") from e
+ 
     def cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
         """
         Computes the cosine similarity between two embedding vectors.
@@ -57,7 +68,7 @@ class EmbeddingsClient:
         return dot_product / (magnitude1 * magnitude2)
     
 
-    def semantic_search(self, user_question: str, top_k: int = 2):
+    async def semantic_search(self, user_question: str, top_k: int = 2):
         """
         Performs vector search. Convert user query to embedding,
         compares it against locally stored chunks, and returns matches exceeding 
@@ -72,7 +83,7 @@ class EmbeddingsClient:
 
         
         # Generate the vector representation for the user's query
-        question_embedding = self.get_embedding(user_question)
+        question_embedding = await self.get_embedding(user_question)
         results = []
         
         # Calculate similarity

@@ -35,7 +35,7 @@ class DocumentChunker:
                 "content": chunk_text,
                 "token_count":token_count
             }
-            print("Dictionar--- document_chunker", dictionary)
+            #print("Dictionar--- document_chunker", dictionary)
             chunks.append(dictionary)
         
         return chunks

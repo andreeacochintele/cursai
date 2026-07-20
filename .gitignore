@@ -8,3 +8,11 @@ embeddings.json
 __pycache__/
 .vscode/
 .idea/
+
+
+# Virtual environment
+venv/
+.venv/
+
+# Sessions
+sessions/
