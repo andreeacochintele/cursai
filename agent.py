@@ -3,8 +3,19 @@ The agent coordinates communication between
 the conversation context and the language model."""
 import copy
 import json
+import logging
+
 from embeddings_client import EmbeddingsClient
 from utils import count_tokens
+from config import RAG_TOP_K
+
+logger = logging.getLogger(__name__)
+
+# Safety cap on chained tool calls (model calls a tool, sees the result,
+# decides to call another, etc.) — prevents an infinite loop if the model
+# gets stuck repeatedly requesting tools instead of answering.
+MAX_TOOL_ITERATIONS = 5
+
 
 class Agent:
 
@@ -24,8 +35,6 @@ class Agent:
         # every session the same shared pool.
         self.embeddings_client = embeddings_client or EmbeddingsClient()
 
-
-
     def _handle_tool_calls(self, tool_calls) -> list[dict]:
         """
         Iterate through requested tool calls, executes the matching local callbacks,
@@ -39,17 +48,25 @@ class Agent:
 
             try:
                 arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
-                if not isinstance(arguments,dict):
+                if not isinstance(arguments, dict):
                     arguments = {}
             except Exception as e:
-                print(f"[ERROR] Failed to parse tool arguments: {e}")
+                logger.warning("Failed to parse arguments for tool '%s': %s", tool_name, e)
                 arguments = {}
 
             tool = self.tools.get(tool_name)
-            if tool:
-                result = tool.callback(**arguments)
-            else:
+            if not tool:
                 result = f"Tool '{tool_name}' not found"
+            else:
+                # A tool callback raising an uncaught exception used to crash
+                # the whole /chat request (500). Now it's contained: the LLM
+                # sees a clear failure message for THIS tool and can still
+                # finish answering with whatever else it knows.
+                try:
+                    result = tool.callback(**arguments)
+                except Exception as e:
+                    logger.exception("Tool '%s' raised an exception during execution", tool_name)
+                    result = f"Tool '{tool_name}' failed to run: {e}"
 
             # Format the output matching the OpenAi tool message schema
             results.append({
@@ -65,13 +82,13 @@ class Agent:
         If no relevant chunks are found, returns a safe fallback instruction.
         """
         try:
-            client = EmbeddingsClient()
-            # Search for the best 2 fragments
-            results = await client.semantic_search(user_message, top_k = 2)
+            # Reuses the shared EmbeddingsClient (shared httpx connection
+            # pool) instead of constructing a new one per call.
+            results = await self.embeddings_client.semantic_search(user_message, top_k=RAG_TOP_K)
         except Exception as e:
             # The data base is not accesible
-            print(f"[WARNING] Semantic search failed: {e}")
-            return(
+            logger.warning("Semantic search failed: %s", e)
+            return (
                 "# Retrieved Context\n"
                 "Warning: Internal knowledge base is currently offline.\n"
                 "Fallback to you general system administration knowledge.\n"
@@ -95,24 +112,30 @@ class Agent:
         """
         prompt = 0
         completion = 0
-        
+
         if isinstance(response, dict) and "usage" in response and response["usage"]:
             prompt = response["usage"].get("prompt_tokens", 0)
             completion = response["usage"].get("completion_tokens", 0)
-            
+
         return prompt, completion
 
     async def _execute_tool_workflow(self, initial_message) -> tuple[dict, int, int, bool]:
         """
         Executes requested tool calls, appends results to history, and prompts the LLM again.
         Returns (message, prompt_tokens, completion_tokens, was_truncated).
+
+        The follow-up LLM call is given the tool list again (tools=...), not
+        just the previous version's plain history — this is what allows the
+        model to chain a second tool call off the first one's result
+        (e.g. "check status" -> sees it's failed -> "check logs"), instead of
+        being forced to produce a final text answer no matter what.
         """
         total_prompt = 0
         total_completion = 0
-        
+
         # Create a deep copy of the initial message to prevent mutating the original data structure
         saved_message = copy.deepcopy(initial_message)
-        
+
         # Ensure that function arguments are serialized back to a JSON string 
         # to satisfy the strict schema validation of the OpenAI API
         for tc in saved_message.get("tool_calls", []):
@@ -126,14 +149,17 @@ class Agent:
         tool_results = self._handle_tool_calls(initial_message["tool_calls"])
         for result in tool_results:
             await self.context.add_message(result)
-        
-        # Second run of the LLM with the tools information
+
+        # Second run of the LLM with the tools information — tools=... is
+        # passed again so the model CAN request another tool call if the
+        # result of this one calls for it (see docstring above).
         try:
             second_response = await self.llm_client.generate_response(
-                self.context.get_history()
+                self.context.get_history(),
+                tools=list(self.tools.values())
             )
         except Exception as e:
-            print(f"[ERROR] LLM call after tool execution failed: {e}")
+            logger.error("LLM call after tool execution failed: %s", e)
             fallback_message = {
                 "role": "assistant",
                 "content": (
@@ -144,11 +170,11 @@ class Agent:
             }
             return fallback_message, 0, 0, False
 
-        # Capture the usage for the second LLM turn
+        # Capture the usage for this LLM turn
         p, c = self._track_llm_usage(second_response)
         total_prompt += p
         total_completion += c
-        
+
         return second_response["message"], total_prompt, total_completion, second_response.get("truncated", False)
 
     async def process_message(self, user_message: str) -> str:
@@ -179,7 +205,7 @@ class Agent:
                 tools=list(self.tools.values())
             )
         except Exception as e:
-            print(f"[ERROR] LLM call failed: {e}")
+            logger.error("LLM call failed: %s", e)
             fallback_text = (
                 "I'm unable to reach the language model right now (network or API error). "
                 "Please check your connection and API configuration, then try again."
@@ -199,12 +225,24 @@ class Agent:
         message = response["message"]
         was_truncated = response.get("truncated", False)
 
-        # Check if the LLM wants to perform external tool activations
-        if message.get("tool_calls"):
-            message, tool_p, tool_c, was_truncated =await self._execute_tool_workflow(message)
+        # Tool-call loop: keep executing tools and re-prompting the model as
+        # long as it keeps requesting them, up to MAX_TOOL_ITERATIONS. Before,
+        # this only ran ONCE — a model wanting to chain a second tool call
+        # off the first one's result would have that request silently
+        # dropped, and whatever it said in that turn (often empty) was
+        # returned as the final answer.
+        iterations = 0
+        while message.get("tool_calls") and iterations < MAX_TOOL_ITERATIONS:
+            iterations += 1
+            message, tool_p, tool_c, was_truncated = await self._execute_tool_workflow(message)
             total_prompt += tool_p
             total_completion += tool_c
 
+        if iterations >= MAX_TOOL_ITERATIONS and message.get("tool_calls"):
+            logger.warning(
+                "Hit MAX_TOOL_ITERATIONS (%d) with more tool calls still pending — "
+                "stopping to avoid an infinite loop.", MAX_TOOL_ITERATIONS
+            )
 
         # Emergency local calculation fallback if the API did not return usage statistics
         if total_prompt == 0:
@@ -221,13 +259,15 @@ class Agent:
         # Fetch statistics from the conversation context
         session_stats = self.context.get_total_tokens_consumed()
 
-        # Display session usage metrics in console
-        print(f" [Current message: {total_prompt} input | {total_completion} output tokens]")
-        print(f" [SESSION TOTAL - Input: {session_stats['total_input']} tokens | "
-              f"Output: {session_stats['total_output']} tokens | "
-              f"Total: {session_stats['grand_total']} tokens | "
-              f"Cost: {session_stats['total_cost']}]")
-        print("-" * 60)
+        # Log session usage metrics
+        logger.info(
+            "Current message: %d input | %d output tokens", total_prompt, total_completion
+        )
+        logger.info(
+            "Session total — input: %d, output: %d, total: %d, cost: %s",
+            session_stats["total_input"], session_stats["total_output"],
+            session_stats["grand_total"], session_stats["total_cost"]
+        )
 
         # Fallback: the LLM call succeeded but produced no usable text
         # (e.g. content came back null/empty with no tool_calls either).

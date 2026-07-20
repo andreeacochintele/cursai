@@ -4,5 +4,3 @@ httpx
 openai
 pydantic
 tiktoken
-requests
- 

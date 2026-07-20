@@ -1,8 +1,11 @@
 import json
+import logging
 import httpx
 from openai import AsyncOpenAI, OpenAIError
 
 from config import EMBEDDINGS_MODEL, MIN_SIMILARITY, AZURE_ENDPOINT, API_KEY
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -38,7 +41,7 @@ class EmbeddingsClient:
             )
             return response.data[0].embedding
         except OpenAIError as e:
-            print(f"[ERROR] Embeddings request failed: {e}")
+            logger.exception("Embeddings request failed (base_url=%s, model=%s)", AZURE_ENDPOINT, EMBEDDINGS_MODEL)
             raise RuntimeError(f"Embeddings service error: {e}") from e
  
     def cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
@@ -78,7 +81,7 @@ class EmbeddingsClient:
             with open("embeddings.json", "r", encoding="utf-8") as f:
                 embeddings_data = json.load(f)  # Now we have a list of dictionaries in Python
         except FileNotFoundError:
-            print("[ERROR]:'embeddings.json' is missing.")
+            logger.error("'embeddings.json' is missing.")
             return []
 
         

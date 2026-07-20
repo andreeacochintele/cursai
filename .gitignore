@@ -1,18 +1,25 @@
-# Ignorăm fișierele de configurare care conțin chei API sau adrese private
+ITIGNORE
+# --- Secrets: never commit your real API keys/endpoints ---
 config.py
-
-# Ignorăm baza de date locală de vectori (este prea mare și se generează local)
+ 
+# --- Generated/local data: regenerated automatically, not source ---
 embeddings.json
-
-# Ignorăm folderele temporare generate de Python sau editoare
+sessions/
+ 
+# --- Python ---
 __pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+ 
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+ 
+# --- Editor/OS cruft ---
 .vscode/
 .idea/
-
-
-# Virtual environment
-venv/
-.venv/
-
-# Sessions
-sessions/
+.DS_Store
+Thumbs.db
+ 

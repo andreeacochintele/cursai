@@ -12,7 +12,10 @@ from config import (
 )
 import json
 import os
+import logging
 from utils import count_tokens
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationContext:
@@ -68,10 +71,10 @@ class ConversationContext:
             with open(registry_path, "r", encoding="utf-8") as f:
                 registry = json.load(f)
         except FileNotFoundError:
-            print(f"[Warning] '{registry_path}' not found. Skipping '{category}'.")
+            logger.warning("'%s' not found. Skipping '%s'.", registry_path, category)
             return content
         except json.JSONDecodeError:
-            print(f"[Error] '{registry_path}' is corrupted. Please check its JSON syntax.")
+            logger.error("'%s' is corrupted. Please check its JSON syntax.", registry_path)
             return content
 
         for document in registry:
@@ -82,7 +85,7 @@ class ConversationContext:
                 with open(doc_path, "r", encoding="utf-8") as f:
                     content += f"\n\n#{document['name']}\n\n" + f.read()
             except FileNotFoundError:
-                print(f"[Warning] '{doc_path}' not found. Skipping this document.")
+                logger.warning("'%s' not found. Skipping this document.", doc_path)
 
         return content
 
@@ -99,7 +102,7 @@ class ConversationContext:
             ) as f:
                 prompt_content = f.read()
         except FileNotFoundError:
-            print("[ERROR]:'identity.md' is missing. Falling back to a minimal generic identity.")
+            logger.error("'identity.md' is missing. Falling back to a minimal generic identity.")
             prompt_content = (
                 "You are a helpful Linux system administration assistant. "
                 "Your custom identity file could not be loaded, so you are "
@@ -170,7 +173,7 @@ class ConversationContext:
             summary_text = (result.get("message", {}) or {}).get("content", "")
             return summary_text.strip() or None
         except Exception as e:
-            print(f"[WARNING] Context summarization failed: {e}")
+            logger.warning("Context summarization failed: %s", e)
             return None
 
     async def add_message(self, message:dict, input_tokens:int = 0,output_tokens:int=0):
@@ -201,8 +204,10 @@ class ConversationContext:
         current_tokens = self._current_context_tokens()
         has_enough_messages = len(self.messages) > KEEP_RECENT_MESSAGES + 1
         if current_tokens > MAX_CONTEXT_TOKENS and has_enough_messages:
-            print(f"\n[Context Recycling] Context reached {current_tokens} tokens "
-                  f"(limit: {MAX_CONTEXT_TOKENS}). Compressing older turns...")
+            logger.info(
+                "Context reached %d tokens (limit: %d). Compressing older turns...",
+                current_tokens, MAX_CONTEXT_TOKENS
+            )
 
             # Safeguard index 0: Ensure the System Identity Prompt is never purged
             system_prompt = self.messages[0]
@@ -219,11 +224,11 @@ class ConversationContext:
                     "content": f"# Summary of earlier conversation\n{summary_text}"
                 }
                 self.messages = [system_prompt, summary_message] + recent_messages
-                print("[Context Recycling] Older turns summarized and compressed.")
+                logger.info("Older turns summarized and compressed.")
             else:
                 # Fallback: summarization unavailable or failed -> plain truncation
                 self.messages = [system_prompt] + recent_messages
-                print("[Context Recycling] Summarization unavailable, fell back to truncation.")
+                logger.info("Summarization unavailable, fell back to plain truncation.")
 
     # Directory where session JSON files are stored (one file per session_id)
     SESSIONS_DIR = "sessions"
@@ -248,7 +253,7 @@ class ConversationContext:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except OSError as e:
-            print(f"[ERROR] Could not save session '{session_id}': {e}")
+            logger.error("Could not save session '%s': %s", session_id, e)
 
         return path
 
@@ -265,10 +270,10 @@ class ConversationContext:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            print(f"[WARNING] Session '{session_id}' not found.")
+            logger.warning("Session '%s' not found.", session_id)
             return False
         except json.JSONDecodeError as e:
-            print(f"[ERROR] Session file '{path}' is corrupted: {e}")
+            logger.error("Session file '%s' is corrupted: %s", path, e)
             return False
 
         self.messages = data.get("messages", self.messages)
@@ -312,7 +317,7 @@ class ConversationContext:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
         except OSError as e:
-            print(f"[ERROR] Could not export conversation to '{filepath}': {e}")
+            logger.error("Could not export conversation to '%s': %s", filepath, e)
 
         return filepath
 

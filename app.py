@@ -10,7 +10,6 @@ Docs available at:
 """
 from contextlib import asynccontextmanager
 import logging
-import traceback
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -18,8 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger("wizzard")
-logging.basicConfig(level=logging.INFO)
+from logging_config import setup_logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 from llm_client import LLMClient
 from embeddings_client import EmbeddingsClient
@@ -107,14 +107,10 @@ async def chat(request: ChatRequest):
         reply = await session_manager.send_message(request.session_id, request.message)
     except Exception as e:
         # Anything unexpected becomes a clean 500 instead of a stack trace
-        # leaking to the client — but we print the FULL traceback server-side
-        # so it's actually possible to debug what happened. Using plain
-        # print() (not logger) so it shows regardless of uvicorn's own
-        # logging configuration.
-        print("=" * 60)
-        print("[ERROR] /chat failed — full traceback below:")
-        traceback.print_exc()
-        print("=" * 60)
+        # leaking to the client — logger.exception() automatically attaches
+        # the full traceback to the log line, so it's still fully visible
+        # server-side for debugging, without a manual traceback dump.
+        logger.exception("/chat failed for session '%s'", request.session_id)
         raise HTTPException(status_code=500, detail=f"Agent failed to respond: {e}")
 
     return ChatResponse(session_id=request.session_id, reply=reply)

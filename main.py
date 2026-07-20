@@ -8,6 +8,7 @@ interface(CLI) for interacting with the agent.
 import asyncio
 from datetime import datetime
 
+from logging_config import setup_logging
 from agent import Agent
 from llm_client import LLMClient
 from conversation_context import ConversationContext
@@ -53,6 +54,8 @@ def print_help():
 
 
 async def main():
+    setup_logging()
+
     # Initialize the LLM Client for generating text, executing tool calls,
     # and generating context summaries
     llm_client = LLMClient()

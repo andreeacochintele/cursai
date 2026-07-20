@@ -7,15 +7,19 @@ including formatting tools, executing completions,
 and capturing token usage.
 """
 import copy
-import json 
+import json
+import logging
 from openai import AsyncOpenAI, OpenAIError
 from config import (
     MODEL_NAME,
     AZURE_ENDPOINT,
     API_KEY,
-    MAX_RESPONSE_TOKENS
+    MAX_RESPONSE_TOKENS,
+    TOKEN_LIMIT_PARAM,
 )
 from tools.tool import Tool
+
+logger = logging.getLogger(__name__)
  
 class LLMClient:
     """
@@ -54,14 +58,15 @@ class LLMClient:
         """
 
         # Prepare arguments for the completion API call.
-        # max_completion_tokens is set explicitly — relying on the endpoint's
-        # own default can silently cap (and truncate) responses too early.
-        # Note: newer OpenAI models require 'max_completion_tokens' instead
-        # of the older 'max_tokens' parameter.
+        # The token-limit kwarg is named TOKEN_LIMIT_PARAM in config.py:
+        # OpenAI/Azure (newer reasoning-capable models) expect
+        # 'max_completion_tokens', while Ollama's OpenAI-compatible layer
+        # expects the older 'max_tokens'. Configurable instead of hardcoded
+        # so the same code works against either provider.
         kwargs = {
             "model": MODEL_NAME,
             "messages": messages,
-            "max_completion_tokens": MAX_RESPONSE_TOKENS
+            TOKEN_LIMIT_PARAM: MAX_RESPONSE_TOKENS
         }
 
         # Inject formatted tools if any are active
@@ -79,10 +84,10 @@ class LLMClient:
             )
         except OpenAIError as e:
             # Handle specific OpenAi exceptions
-            print(f"[ERROR] LLM API Call failed: {e}")
+            logger.exception("LLM API call failed (model=%s, base_url=%s)", MODEL_NAME, AZURE_ENDPOINT)
             raise e
         except Exception as e:
-            print(f"[ERROR] Unexpected connection error. {e}")
+            logger.exception("Unexpected connection error calling the LLM")
             raise e
  
         # Extract the primary generated assistant message
@@ -94,8 +99,10 @@ class LLMClient:
         # loudly instead of leaving the caller to guess from token counts.
         was_truncated = getattr(choice, "finish_reason", None) == "length"
         if was_truncated:
-            print(f"[WARNING] LLM response was truncated at MAX_RESPONSE_TOKENS "
-                  f"({MAX_RESPONSE_TOKENS}). Consider raising this value in config.py.")
+            logger.warning(
+                "LLM response was truncated at MAX_RESPONSE_TOKENS (%d). "
+                "Consider raising this value in config.py.", MAX_RESPONSE_TOKENS
+            )
 
         # Build the standardized response dictionary
         result = {
