@@ -1,74 +1,92 @@
 """
 Disk Usage Tool Module.
 
-Runs `df -h [path]` locally (subprocess) and returns the raw output.
-Read-only — useful for spotting full disks that cause services to crash.
+Reports disk space usage via PowerShell Get-PSDrive — the Windows analog
+of `df -h`. Read-only.
 """
 
+import os
 import re
 import subprocess
 from .tool import Tool
 
-# Loose but safe: allow typical POSIX path characters only.
-_VALID_PATH = re.compile(r"^[a-zA-Z0-9_./-]+$")
+# A single drive letter, e.g. "C" or "C:" — deliberately narrow allowlist.
+_VALID_DRIVE = re.compile(r"^[a-zA-Z]:?$")
 
 
-def disk_usage(path=None, **kwargs):
+def disk_usage(path=None, drive=None, **kwargs):
     """
-    Returns `df -h` output, optionally scoped to a specific mount/path.
+    Returns disk usage for all local drives, or a single drive if specified.
 
     Args:
-        path (str, optional): Path or mount point to check (e.g. "/var").
-            If omitted, shows usage for all mounted filesystems.
+        path / drive (str, optional): A drive letter, e.g. "C" or "C:".
+            If omitted, shows usage for all local filesystem drives.
 
     Returns:
-        str: Raw command output, or a clear error message.
+        str: Formatted output, or a clear error message.
     """
-    if path is None:
-        path = kwargs.get("path")
+    # Accept either "path" or "drive" as the parameter name for convenience.
+    drive_letter = drive if drive is not None else path
+    if drive_letter is None:
+        drive_letter = kwargs.get("drive") or kwargs.get("path")
 
-    command = ["df", "-h"]
-    if path:
-        if not _VALID_PATH.match(path):
-            return f"Calea '{path}' conține caractere neobișnuite — refuz să o trimit."
-        command.append(path)
+    env = os.environ.copy()
+
+    if drive_letter:
+        drive_letter = str(drive_letter).strip().rstrip(":")
+        if not _VALID_DRIVE.match(drive_letter):
+            return f"'{drive_letter}' doesn't look like a valid drive letter — refusing to run it, to stay safe."
+        env["DRIVE_LETTER"] = drive_letter
+        command = (
+            "Get-PSDrive -Name $env:DRIVE_LETTER -PSProvider FileSystem -ErrorAction Stop | "
+            "Select-Object Name, "
+            "@{N='UsedGB';E={[math]::Round($_.Used/1GB,2)}}, "
+            "@{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}} | "
+            "Format-Table -AutoSize"
+        )
+    else:
+        command = (
+            "Get-PSDrive -PSProvider FileSystem | "
+            "Select-Object Name, "
+            "@{N='UsedGB';E={[math]::Round($_.Used/1GB,2)}}, "
+            "@{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}} | "
+            "Format-Table -AutoSize"
+        )
 
     try:
         result = subprocess.run(
-            command,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=15,
+            env=env,
         )
         output = (result.stdout or "") + (result.stderr or "")
         if not output.strip():
-            output = f"(fără output; cod de ieșire: {result.returncode})"
+            output = f"(no output; exit code: {result.returncode})"
         return output[:2000]
 
     except FileNotFoundError:
-        return (
-            "Comanda 'df' nu există pe acest sistem. Probabil botul rulează "
-            "local pe Windows, nu pe serverul Linux țintă — acest tool "
-            "trebuie rulat pe (sau conectat la) mașina Linux reală."
-        )
+        return "The 'powershell' command isn't available on this system."
     except subprocess.TimeoutExpired:
-        return "Comanda 'df -h' a depășit timpul limită (10s)."
+        return "Checking disk usage timed out (15s)."
     except Exception as e:
-        return f"Eroare la verificarea spațiului pe disc: {e}"
+        return f"Error checking disk usage: {e}"
 
 
 disk_usage_tool = Tool(
     name="disk_usage",
     description=(
-        "Checks disk space usage on the Linux server (like 'df -h'). "
-        "Optionally scoped to a specific path or mount point. Read-only."
+        "Checks disk space usage (used/free GB) on the WINDOWS machine "
+        "hosting this bot, via PowerShell Get-PSDrive — the Windows analog "
+        "of 'df -h'. Optionally scoped to one drive letter. Read-only."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "path": {
+            "drive": {
                 "type": "string",
-                "description": "Optional path or mount point to check, e.g. '/var'. Omit to see all filesystems."
+                "description": "Optional drive letter to check, e.g. 'C'. Omit to see all local drives."
             }
         },
         "required": []

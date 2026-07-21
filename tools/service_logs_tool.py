@@ -1,29 +1,32 @@
 """
 Service Logs Tool Module.
 
-Runs `journalctl -u <service> -n <lines>` locally (subprocess) and returns
-the raw output so the LLM can spot errors/warnings. Read-only.
+Fetches recent Windows Event Log entries related to a service, via
+PowerShell's Get-WinEvent. This is the Windows analog of `journalctl -u`.
+Read-only.
 """
 
+import os
 import re
 import subprocess
 from .tool import Tool
 
-_VALID_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9_.@-]+$")
-_MAX_LINES = 200
-_DEFAULT_LINES = 50
+_VALID_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9 _.-]+$")
+_MAX_LINES = 100
+_DEFAULT_LINES = 20
 
 
 def service_logs(service_name=None, lines=None, **kwargs):
     """
-    Returns the last N log lines for a systemd service via journalctl.
+    Returns recent Windows Event Log entries mentioning a service name,
+    searched across the System and Application logs.
 
     Args:
-        service_name (str): Name of the systemd service (e.g. "nginx").
-        lines (int): How many recent log lines to fetch (default 50, max 200).
+        service_name (str): Windows service name, e.g. "Spooler".
+        lines (int): How many recent matching events to fetch (default 20, max 100).
 
     Returns:
-        str: Raw log output, or a clear error message.
+        str: Formatted event output, or a clear error message.
     """
     if service_name is None:
         service_name = kwargs.get("service_name")
@@ -31,13 +34,10 @@ def service_logs(service_name=None, lines=None, **kwargs):
         lines = kwargs.get("lines", _DEFAULT_LINES)
 
     if not service_name:
-        return "Nu am primit numele serviciului. Ex: nginx, sshd, docker."
+        return "I didn't receive a service name. Example: Spooler, wuauserv, W32Time."
 
     if not _VALID_SERVICE_NAME.match(service_name):
-        return (
-            f"Numele de serviciu '{service_name}' conține caractere neobișnuite "
-            "pentru un unit systemd — refuz să-l trimit ca să evit orice risc."
-        )
+        return f"'{service_name}' has unusual characters for a service name — refusing to run it, to stay safe."
 
     try:
         lines = int(lines)
@@ -45,47 +45,55 @@ def service_logs(service_name=None, lines=None, **kwargs):
         lines = _DEFAULT_LINES
     lines = max(1, min(lines, _MAX_LINES))
 
+    env = os.environ.copy()
+    env["SVC_NAME"] = service_name
+    env["SVC_LINES"] = str(lines)
+
+    command = (
+        "Get-WinEvent -LogName System,Application -MaxEvents 500 -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Message -like ('*' + $env:SVC_NAME + '*') } | "
+        "Select-Object -First ([int]$env:SVC_LINES) TimeCreated, LevelDisplayName, Message | "
+        "Format-List"
+    )
+
     try:
         result = subprocess.run(
-            ["journalctl", "-u", service_name, "-n", str(lines), "--no-pager"],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=20,
+            env=env,
         )
         output = (result.stdout or "") + (result.stderr or "")
         if not output.strip():
-            output = f"(niciun log găsit pentru '{service_name}')"
+            output = f"(no matching events found for '{service_name}')"
         return output[:4000]
 
     except FileNotFoundError:
-        return (
-            "Comanda 'journalctl' nu există pe acest sistem. Probabil botul "
-            "rulează local pe Windows/macOS, nu pe serverul Linux țintă — "
-            "acest tool trebuie rulat pe (sau conectat la) mașina Linux reală."
-        )
+        return "The 'powershell' command isn't available on this system."
     except subprocess.TimeoutExpired:
-        return f"Comanda 'journalctl -u {service_name}' a depășit timpul limită (10s)."
+        return f"Fetching logs for '{service_name}' timed out (20s)."
     except Exception as e:
-        return f"Eroare la citirea logurilor pentru '{service_name}': {e}"
+        return f"Error fetching logs for '{service_name}': {e}"
 
 
 service_logs_tool = Tool(
     name="service_logs",
     description=(
-        "Fetches the most recent journalctl log lines for a Linux systemd "
-        "service, to help diagnose errors, warnings, or startup failures. "
-        "Read-only."
+        "Fetches recent WINDOWS Event Log entries (System/Application logs) "
+        "mentioning a given service, to help diagnose errors or warnings — "
+        "the Windows analog of 'journalctl -u'. Read-only."
     ),
     parameters={
         "type": "object",
         "properties": {
             "service_name": {
                 "type": "string",
-                "description": "The systemd service name, e.g. 'nginx', 'sshd', 'docker'."
+                "description": "The Windows service name, e.g. 'Spooler', 'wuauserv'."
             },
             "lines": {
                 "type": "integer",
-                "description": "How many recent log lines to fetch (default 50, max 200)."
+                "description": "How many recent matching events to fetch (default 20, max 100)."
             }
         },
         "required": ["service_name"]

@@ -1,4 +1,4 @@
-ITIGNORE
+GITIGNORE
 # --- Secrets: never commit your real API keys/endpoints ---
 config.py
  

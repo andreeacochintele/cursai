@@ -1,79 +1,88 @@
 """
 Service Status Tool Module.
 
-Runs `systemctl status <service>` locally (subprocess) and returns the raw
-output so the LLM can interpret whether the service is active, failed, etc.
-Read-only: never restarts, stops, or starts anything.
+Checks the status of a Windows service via PowerShell's Get-Service.
+Read-only: never starts, stops, or restarts anything.
+
+NOTE: this bot's persona ("Wizzard of OS") is a Linux expert, but this
+particular tool runs against the WINDOWS machine hosting the bot (no
+Linux host is available in this setup). It checks Windows services, not
+systemd units. If you later get access to a real Linux server, swap the
+subprocess call below for an SSH-based one instead.
 """
 
+import os
 import re
 import subprocess
 from .tool import Tool
 
-# Systemd unit names: letters, digits, ':-_.\@' — keep it conservative.
-_VALID_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9_.@-]+$")
+# Windows service names: letters, digits, spaces, '_.-' — conservative allowlist.
+_VALID_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9 _.-]+$")
 
 
 def service_status(service_name=None, **kwargs):
     """
-    Returns the output of `systemctl status <service_name>`.
+    Returns the status of a Windows service (via PowerShell Get-Service).
 
     Args:
-        service_name (str): Name of the systemd service (e.g. "nginx", "sshd").
+        service_name (str): Windows service name, e.g. "Spooler", "wuauserv".
 
     Returns:
-        str: Raw command output (stdout+stderr), or a clear error message.
+        str: Formatted status output, or a clear error message.
     """
     if service_name is None:
         service_name = kwargs.get("service_name")
 
     if not service_name:
-        return "Nu am primit numele serviciului. Ex: nginx, sshd, docker."
+        return "I didn't receive a service name. Example: Spooler, wuauserv, W32Time."
 
     if not _VALID_SERVICE_NAME.match(service_name):
-        return (
-            f"Numele de serviciu '{service_name}' conține caractere neobișnuite "
-            "pentru un unit systemd — refuz să-l trimit ca să evit orice risc."
-        )
+        return f"'{service_name}' has unusual characters for a service name — refusing to run it, to stay safe."
+
+    # Pass the value through an environment variable, not string interpolation,
+    # so PowerShell reads it as inert data instead of parsing it as code.
+    env = os.environ.copy()
+    env["SVC_NAME"] = service_name
+
+    command = (
+        "Get-Service -Name $env:SVC_NAME -ErrorAction Stop | "
+        "Format-List Name, DisplayName, Status, StartType"
+    )
 
     try:
         result = subprocess.run(
-            ["systemctl", "status", service_name],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=15,
+            env=env,
         )
         output = (result.stdout or "") + (result.stderr or "")
         if not output.strip():
-            output = f"(fără output; cod de ieșire: {result.returncode})"
-        # Keep it bounded so we don't blow the LLM's context window.
+            output = f"(no output; exit code: {result.returncode})"
         return output[:3000]
 
     except FileNotFoundError:
-        return (
-            "Comanda 'systemctl' nu există pe acest sistem. Probabil botul "
-            "rulează local pe Windows/macOS, nu pe serverul Linux țintă — "
-            "acest tool trebuie rulat pe (sau conectat la) mașina Linux reală."
-        )
+        return "The 'powershell' command isn't available on this system."
     except subprocess.TimeoutExpired:
-        return f"Comanda 'systemctl status {service_name}' a depășit timpul limită (10s)."
+        return f"Checking service '{service_name}' timed out (15s)."
     except Exception as e:
-        return f"Eroare la verificarea serviciului '{service_name}': {e}"
+        return f"Error checking service '{service_name}': {e}"
 
 
 service_status_tool = Tool(
     name="service_status",
     description=(
-        "Checks the current status of a Linux systemd service (active, "
-        "inactive, failed) by running 'systemctl status'. Read-only — does "
-        "not restart or modify the service."
+        "Checks the current status of a WINDOWS service (running, stopped, "
+        "startup type) via PowerShell Get-Service, on the machine hosting "
+        "this bot. Read-only — does not restart or modify the service."
     ),
     parameters={
         "type": "object",
         "properties": {
             "service_name": {
                 "type": "string",
-                "description": "The systemd service name, e.g. 'nginx', 'sshd', 'docker'."
+                "description": "The Windows service name, e.g. 'Spooler', 'wuauserv', 'W32Time'."
             }
         },
         "required": ["service_name"]
