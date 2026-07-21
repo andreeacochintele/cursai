@@ -35,10 +35,10 @@ _PROFILES = {
 
     "azure": {
         # Requires an Azure AI Foundry resource + API key.
-        "endpoint": "https://<your-resource>.services.ai.azure.com/openai/v1",
+        "endpoint": "https://ai-academy-foundry.services.ai.azure.com/openai/v1",
         "api_key": "<your-azure-api-key>",
-        "model_name": "<your-chat-deployment-name>",             # e.g. "gpt-4o-mini"
-        "embeddings_model": "<your-embeddings-deployment-name>",  # e.g. "text-embedding-3-large"
+        "model_name": "gpt-5-mini>",             # e.g. "gpt-4o-mini"
+        "embeddings_model": "text-embedding-3-large",  # e.g. "text-embedding-3-large"
                                                                    # ^ must be a SEPARATE deployment from the chat model
         "token_limit_param": "max_completion_tokens",  # Azure/OpenAI's newer models expect this exact key name
         "input_price_per_million": 2.0,   # $ per 1M input tokens — check your actual pricing tier and adjust
@@ -49,12 +49,12 @@ _PROFILES = {
         # Free, runs fully on your own machine — no API key, no cost.
         # One-time setup:
         #   curl -fsSL https://ollama.com/install.sh | sh
-        #   ollama pull llama3.1          # any tool-calling-capable chat model
+        #   ollama pull quen3:1.7b         # any tool-calling-capable chat model
         #   ollama pull nomic-embed-text  # an embeddings model
         #   ollama serve                  # keep this running in a terminal
         "endpoint": "http://localhost:11434/v1",
         "api_key": "ollama",         # ignored by Ollama, but the OpenAI SDK requires some non-empty string
-        "model_name": "llama3.1",
+        "model_name": "qwen3:1.7b",
         "embeddings_model": "nomic-embed-text",
         "token_limit_param": "max_tokens",  # Ollama's OpenAI-compatible layer expects the OLDER param name
         "input_price_per_million": 0.0,   # local = free
@@ -91,6 +91,10 @@ OUTPUT_TOKEN_PRICE_PER_MILLION = _active["output_price_per_million"]
 # Shared settings — apply to both profiles, tune freely regardless of provider
 # ============================================================
 CHUNK_SIZE = 150
+
+CHUNK_OVERLAP = 30
+
+RAG_TOP_K = 3
 MIN_SIMILARITY = 0.55
 MAX_HISTORY_MESSAGES = 13
 MAX_CONTEXT_TOKENS = 4000
