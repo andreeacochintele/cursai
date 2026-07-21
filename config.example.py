@@ -38,7 +38,7 @@ _PROFILES = {
         "endpoint": "https://ai-academy-foundry.services.ai.azure.com/openai/v1",
         "api_key": "<your-azure-api-key>",
         "model_name": "gpt-5-mini>",             # e.g. "gpt-4o-mini"
-        "embeddings_model": "text-embedding-3-large",  # e.g. "text-embedding-3-large"
+        "embeddings_model": "text-embedding-3-small",  # e.g. "text-embedding-3-large"
                                                                    # ^ must be a SEPARATE deployment from the chat model
         "token_limit_param": "max_completion_tokens",  # Azure/OpenAI's newer models expect this exact key name
         "input_price_per_million": 2.0,   # $ per 1M input tokens — check your actual pricing tier and adjust
@@ -57,8 +57,8 @@ _PROFILES = {
         "model_name": "qwen3:1.7b",
         "embeddings_model": "nomic-embed-text",
         "token_limit_param": "max_tokens",  # Ollama's OpenAI-compatible layer expects the OLDER param name
-        "input_price_per_million": 0.0,   # local = free
-        "output_price_per_million": 0.0,
+        "input_price_per_million": 2.0,   # local = free
+        "output_price_per_million": 10.0,
     },
 
 }

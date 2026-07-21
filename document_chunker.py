@@ -14,22 +14,17 @@ class DocumentChunker:
     """
     def give_chunks(self, content, document_id):
         """
-        Splits a text document into chunks of CHUNK_SIZE words, advancing by
-        (CHUNK_SIZE - CHUNK_OVERLAP) words each step so consecutive chunks
-        share CHUNK_OVERLAP words of context.
-
-        Without overlap, a sentence that happens to fall right at a chunk
-        boundary gets split across two chunks, and neither half alone may
-        be similar enough to a query to be retrieved by semantic search.
-        Overlap keeps boundary content whole in at least one chunk.
+        Splits text into CHUNK_SIZE-word chunks, stepping by
+        (CHUNK_SIZE - CHUNK_OVERLAP) so consecutive chunks overlap —
+        keeps sentences that fall on a chunk boundary from getting cut
+        in half and losing retrieval relevance.
         """
         chunks = []
         words = content.split()
         if not words:
             return chunks
 
-        # Guard against a misconfigured CHUNK_OVERLAP >= CHUNK_SIZE, which
-        # would make the step <= 0 and loop forever.
+        # guard against CHUNK_OVERLAP >= CHUNK_SIZE (step would be <= 0)
         step = max(1, CHUNK_SIZE - CHUNK_OVERLAP)
 
         for i in range(0, len(words), step):
@@ -48,9 +43,7 @@ class DocumentChunker:
                 "token_count": token_count
             })
 
-            # Once a chunk reaches the end of the document, stop — the
-            # overlap step would otherwise produce a final chunk that's
-            # entirely redundant with the one before it.
+            # stop once we hit the end, otherwise overlap adds a redundant last chunk
             if i + CHUNK_SIZE >= len(words):
                 break
 

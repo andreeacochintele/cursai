@@ -11,17 +11,12 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingsClient:
     """
-    Handles communication with the Azure AI Foundry embeddings deployment
-    (same endpoint/credentials as chat completions), performs cosine
-    similarity, and executes semantic search over the local vector database.
+    Talks to the embeddings API (same endpoint/credentials as chat),
+    computes cosine similarity, and runs semantic search over the local
+    vector store.
     """
     def __init__(self, http_client: httpx.AsyncClient | None = None):
-        # Reuses the same Azure endpoint/key as the chat model, via the
-        # OpenAI SDK, exactly like LLMClient does — this is a real Azure
-        # AI Foundry deployment, not a local Ollama server. An injected
-        # httpx client lets the app share one connection pool instead of
-        # opening a new one per call; if none is given, the SDK manages
-        # its own internally.
+        # shared httpx client lets callers reuse one connection pool
         self._client = AsyncOpenAI(
             base_url=AZURE_ENDPOINT,
             api_key=API_KEY,
@@ -31,8 +26,8 @@ class EmbeddingsClient:
 
     async def get_embedding(self, text: str) -> list[float]:
         """
-        Requests a vector embedding for `text` from the configured Azure
-        AI Foundry embeddings deployment (EMBEDDINGS_MODEL in config.py).
+        Gets a vector embedding for `text` from the configured embeddings
+        deployment (EMBEDDINGS_MODEL in config.py).
         """
         try:
             response = await self._client.embeddings.create(

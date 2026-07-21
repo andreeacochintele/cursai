@@ -1,14 +1,9 @@
 """
 Service Status Tool Module.
 
-Checks the status of a Windows service via PowerShell's Get-Service.
-Read-only: never starts, stops, or restarts anything.
-
-NOTE: this bot's persona ("Wizzard of OS") is a Linux expert, but this
-particular tool runs against the WINDOWS machine hosting the bot (no
-Linux host is available in this setup). It checks Windows services, not
-systemd units. If you later get access to a real Linux server, swap the
-subprocess call below for an SSH-based one instead.
+Checks a Windows service via PowerShell Get-Service. Read-only.
+Note: runs against the Windows host, not a real Linux server — bot's
+persona is Linux-focused but there's no Linux target in this setup yet.
 """
 
 import os
@@ -39,8 +34,7 @@ def service_status(service_name=None, **kwargs):
     if not _VALID_SERVICE_NAME.match(service_name):
         return f"'{service_name}' has unusual characters for a service name — refusing to run it, to stay safe."
 
-    # Pass the value through an environment variable, not string interpolation,
-    # so PowerShell reads it as inert data instead of parsing it as code.
+    # pass through env var, not string interpolation, so PowerShell treats it as data not code
     env = os.environ.copy()
     env["SVC_NAME"] = service_name
 

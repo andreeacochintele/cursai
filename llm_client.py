@@ -57,12 +57,7 @@ class LLMClient:
         including generated message, tool calls and API token usage.
         """
 
-        # Prepare arguments for the completion API call.
-        # The token-limit kwarg is named TOKEN_LIMIT_PARAM in config.py:
-        # OpenAI/Azure (newer reasoning-capable models) expect
-        # 'max_completion_tokens', while Ollama's OpenAI-compatible layer
-        # expects the older 'max_tokens'. Configurable instead of hardcoded
-        # so the same code works against either provider.
+        # token limit kwarg name differs by provider (see TOKEN_LIMIT_PARAM in config.py)
         kwargs = {
             "model": MODEL_NAME,
             "messages": messages,

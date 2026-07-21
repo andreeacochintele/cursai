@@ -11,9 +11,7 @@ from config import RAG_TOP_K
 
 logger = logging.getLogger(__name__)
 
-# Safety cap on chained tool calls (model calls a tool, sees the result,
-# decides to call another, etc.) — prevents an infinite loop if the model
-# gets stuck repeatedly requesting tools instead of answering.
+# cap on chained tool calls, to avoid an infinite loop
 MAX_TOOL_ITERATIONS = 5
 
 
@@ -29,10 +27,7 @@ class Agent:
         self.context = context
         # Convert the tools list into a lookup dictionary mapped by tool name
         self.tools = {tool.name: tool for tool in tools} if tools else {}
-        # Reused across calls (instead of "new EmbeddingsClient() per message"
-        # like the CLI version did) so the underlying httpx connection pool
-        # is shared. Passed in explicitly so session_manager.py can give
-        # every session the same shared pool.
+        # shared across sessions so we don't open a new connection pool per message
         self.embeddings_client = embeddings_client or EmbeddingsClient()
 
     def _handle_tool_calls(self, tool_calls) -> list[dict]:
@@ -58,10 +53,7 @@ class Agent:
             if not tool:
                 result = f"Tool '{tool_name}' not found"
             else:
-                # A tool callback raising an uncaught exception used to crash
-                # the whole /chat request (500). Now it's contained: the LLM
-                # sees a clear failure message for THIS tool and can still
-                # finish answering with whatever else it knows.
+                # catch tool errors here so one bad tool call doesn't 500 the whole request
                 try:
                     result = tool.callback(**arguments)
                 except Exception as e:
@@ -82,25 +74,20 @@ class Agent:
         If no relevant chunks are found, returns a safe fallback instruction.
         """
         try:
-            # Reuses the shared EmbeddingsClient (shared httpx connection
-            # pool) instead of constructing a new one per call.
             results = await self.embeddings_client.semantic_search(user_message, top_k=RAG_TOP_K)
         except Exception as e:
-            # The data base is not accesible
             logger.warning("Semantic search failed: %s", e)
             return (
                 "# Retrieved Context\n"
                 "Warning: Internal knowledge base is currently offline.\n"
                 "Fallback to you general system administration knowledge.\n"
             )
-        # The search was fine but no entries over MIN_SIMILARITY
         if not results:
             return (
                 "# Retrieved Context\n"
                 "No specific internal documentation matches this query.\n"
                 "Fallback to you general system administration knowledge\n"
             )
-        # We found relevant data
         retrieved_context = "# Retrieved Context \n"
         for result in results:
             retrieved_context += result["content"] + "\n\n"
@@ -124,35 +111,25 @@ class Agent:
         Executes requested tool calls, appends results to history, and prompts the LLM again.
         Returns (message, prompt_tokens, completion_tokens, was_truncated).
 
-        The follow-up LLM call is given the tool list again (tools=...), not
-        just the previous version's plain history — this is what allows the
-        model to chain a second tool call off the first one's result
-        (e.g. "check status" -> sees it's failed -> "check logs"), instead of
-        being forced to produce a final text answer no matter what.
+        tools=... gets passed again on the follow-up call so the model can
+        chain another tool call if it needs to (e.g. status fails -> logs).
         """
         total_prompt = 0
         total_completion = 0
 
-        # Create a deep copy of the initial message to prevent mutating the original data structure
         saved_message = copy.deepcopy(initial_message)
 
-        # Ensure that function arguments are serialized back to a JSON string 
-        # to satisfy the strict schema validation of the OpenAI API
+        # arguments need to be a JSON string, not a dict, for the API
         for tc in saved_message.get("tool_calls", []):
             if not isinstance(tc["function"]["arguments"], str):
                 tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
 
-        # We add the agent's initial intent to run the tools in context
         await self.context.add_message(saved_message)
 
-        # Execute tools and append their response to history
         tool_results = self._handle_tool_calls(initial_message["tool_calls"])
         for result in tool_results:
             await self.context.add_message(result)
 
-        # Second run of the LLM with the tools information — tools=... is
-        # passed again so the model CAN request another tool call if the
-        # result of this one calls for it (see docstring above).
         try:
             second_response = await self.llm_client.generate_response(
                 self.context.get_history(),
@@ -170,7 +147,6 @@ class Agent:
             }
             return fallback_message, 0, 0, False
 
-        # Capture the usage for this LLM turn
         p, c = self._track_llm_usage(second_response)
         total_prompt += p
         total_completion += c
@@ -182,23 +158,16 @@ class Agent:
         The entry point for processing incoming user prompts.
         Coordinates RAG injection, usage tracking, tool routing, and final output
         """
-        # Log user's prompt
         await self.context.add_message({"role": "user", "content": user_message})
 
-        # Retrieve semantic context (RAG)
         context_text = await self._get_retrieved_context(user_message)
 
-        # Compute token counts for monitoring
         total_input_tokens = count_tokens(user_message) + count_tokens(context_text)
 
-        # Create a temporary message list for API calls only.
-        # We intentionally do NOT persist the RAG context into self.context:
-        # this keeps the permanent conversation history lean (cost optimization),
-        # while still giving the LLM the retrieved context for this single turn.
+        # RAG context only goes into this one call, not into stored history
         api_messages = self.context.get_history().copy()
         api_messages.append({"role": "system", "content": context_text})
 
-        # Request initial LLM completion (uses api_messages, WITH RAG context)
         try:
             response = await self.llm_client.generate_response(
                 api_messages,
@@ -217,7 +186,6 @@ class Agent:
             )
             return fallback_text
 
-        # Track usage of the first LLM generation
         p_tokens, c_tokens = self._track_llm_usage(response)
         total_prompt = p_tokens
         total_completion = c_tokens
@@ -225,12 +193,7 @@ class Agent:
         message = response["message"]
         was_truncated = response.get("truncated", False)
 
-        # Tool-call loop: keep executing tools and re-prompting the model as
-        # long as it keeps requesting them, up to MAX_TOOL_ITERATIONS. Before,
-        # this only ran ONCE — a model wanting to chain a second tool call
-        # off the first one's result would have that request silently
-        # dropped, and whatever it said in that turn (often empty) was
-        # returned as the final answer.
+        # keep executing tools + re-prompting while the model keeps asking for them
         iterations = 0
         while message.get("tool_calls") and iterations < MAX_TOOL_ITERATIONS:
             iterations += 1
@@ -244,22 +207,18 @@ class Agent:
                 "stopping to avoid an infinite loop.", MAX_TOOL_ITERATIONS
             )
 
-        # Emergency local calculation fallback if the API did not return usage statistics
         if total_prompt == 0:
             total_prompt = total_input_tokens
             total_completion = count_tokens(message.get("content", ""))
 
-        # Save the final assistant answer
         await self.context.add_message(
             message,
             input_tokens=total_prompt,
             output_tokens=total_completion
         )
 
-        # Fetch statistics from the conversation context
         session_stats = self.context.get_total_tokens_consumed()
 
-        # Log session usage metrics
         logger.info(
             "Current message: %d input | %d output tokens", total_prompt, total_completion
         )
@@ -269,8 +228,6 @@ class Agent:
             session_stats["grand_total"], session_stats["total_cost"]
         )
 
-        # Fallback: the LLM call succeeded but produced no usable text
-        # (e.g. content came back null/empty with no tool_calls either).
         if message.get("content"):
             final_content = message["content"]
         elif was_truncated:

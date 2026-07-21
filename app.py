@@ -28,11 +28,7 @@ from session_manager import SessionManager
 from conversation_context import ConversationContext
 
 
-# --- App state (created once at startup, shared by every request) ---
-# Pydantic models below define exactly what a request body must look like.
-# FastAPI validates incoming JSON against these automatically and returns
-# a 422 error with a clear message if a field is missing or the wrong type
-# — no manual "if not data.get('message')" checks needed, unlike Flask.
+# request/response models, validated automatically by FastAPI
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1, description="Client-chosen identifier for the conversation")
@@ -64,12 +60,7 @@ async def lifespan(app: FastAPI):
         llm_client = LLMClient()
         embeddings_client = EmbeddingsClient(http_client=shared_http_client)
 
-        # One-time knowledge base indexing (skipped if embeddings.json
-        # already exists), same as EmbeddingGenerator did in main.py.
-        # NOTE: EmbeddingGenerator.generate_embeddings() is still the
-        # sync version from the original project (file I/O + calls the
-        # embeddings client). Fine to run once, synchronously, before we
-        # start serving traffic.
+        # builds embeddings.json once at startup if it doesn't exist yet
         await EmbeddingGenerator().generate_embeddings()
 
         app.state.session_manager = SessionManager(llm_client, embeddings_client)
@@ -106,10 +97,7 @@ async def chat(request: ChatRequest):
     try:
         reply = await session_manager.send_message(request.session_id, request.message)
     except Exception as e:
-        # Anything unexpected becomes a clean 500 instead of a stack trace
-        # leaking to the client — logger.exception() automatically attaches
-        # the full traceback to the log line, so it's still fully visible
-        # server-side for debugging, without a manual traceback dump.
+        # log full traceback server-side, keep the client response generic
         logger.exception("/chat failed for session '%s'", request.session_id)
         raise HTTPException(status_code=500, detail=f"Agent failed to respond: {e}")
 

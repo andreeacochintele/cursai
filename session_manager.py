@@ -1,21 +1,10 @@
 """
 Session management for the multi-user API.
 
-The CLI version had exactly one ConversationContext living for the whole
-process. A web API serves many users concurrently, each identified by a
-session_id, so we need one (Agent, ConversationContext) pair per session,
-kept in memory and reused across requests from the same session_id.
-
-Two concurrency concerns this module addresses:
-
-1. Two different sessions must never block each other. Solved by simply
-   keeping separate objects per session_id — nothing shared, nothing to
-   lock, across sessions.
-2. Two *concurrent* requests for the *same* session_id (e.g. a double
-   click, or a buggy client retry) must not interleave and corrupt that
-   session's message history. Solved with one asyncio.Lock per session:
-   requests for the same session_id queue up and run one at a time;
-   requests for different sessions run fully in parallel.
+One (Agent, ConversationContext) pair per session_id, kept in memory.
+Each session gets its own asyncio.Lock so concurrent requests for the
+same session_id don't interleave and corrupt its history; different
+sessions run fully in parallel.
 """
 import asyncio
 
@@ -31,9 +20,7 @@ class SessionManager:
         self.embeddings_client = embeddings_client
         self._agents: dict[str, Agent] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        # Guards creation of new per-session entries in the dicts above,
-        # so two simultaneous first-requests for a brand-new session_id
-        # can't each create their own separate Agent.
+        # guards against two simultaneous first-requests creating duplicate agents
         self._creation_lock = asyncio.Lock()
 
     async def _get_or_create(self, session_id: str) -> tuple[Agent, asyncio.Lock]:
@@ -41,11 +28,10 @@ class SessionManager:
             return self._agents[session_id], self._locks[session_id]
 
         async with self._creation_lock:
-            # Re-check: another request may have created it while we waited.
+            # re-check in case another request created it while we waited
             if session_id not in self._agents:
                 context = ConversationContext(llm_client=self.llm_client)
-                # If a save file already exists for this session_id, resume it
-                # instead of starting fresh (mirrors the CLI's resume flow).
+                # resumes from disk if a save file already exists
                 context.load_session(session_id)
 
                 agent = Agent(
@@ -72,15 +58,8 @@ class SessionManager:
 
     def _get_context(self, session_id: str) -> ConversationContext | None:
         """
-        Returns the ConversationContext for a session: the live in-memory
-        one if the session has already exchanged a message in this process,
-        otherwise a fresh one loaded straight from its saved JSON file on
-        disk. Returns None if the session doesn't exist anywhere.
-
-        This lets the web UI browse/export a session's history *before*
-        the user has sent it a first live message in the current process
-        — without this fallback, a session that only exists on disk would
-        404 until send_message() had been called for it at least once.
+        Returns the live context if the session's already active in memory,
+        otherwise loads it fresh from disk. None if it doesn't exist at all.
         """
         if session_id in self._agents:
             return self._agents[session_id].context
@@ -103,11 +82,7 @@ class SessionManager:
         return context.get_total_tokens_consumed()
 
     def export_markdown(self, session_id: str) -> str | None:
-        """
-        Builds a Markdown transcript (user/assistant turns only) for a
-        session, in-memory — no temp file needed, unlike
-        ConversationContext.export_history() which writes to disk.
-        """
+        """Builds a Markdown transcript (user/assistant turns only), in-memory."""
         context = self._get_context(session_id)
         if context is None:
             return None
